@@ -4,6 +4,8 @@ from typing import Any, Dict, Optional
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from ..util.mcp import ServerParameters
+
 
 class Settings(BaseSettings):
     """Configuration for running HITL experiences via the ursa CLI."""
@@ -107,4 +109,8 @@ class Settings(BaseSettings):
     ssl_verify_emb: bool = Field(
         True,
         description="Whether or not to verify SSL certificates for embedding model.",
+    )
+    mcp_servers: dict[str, ServerParameters] = Field(
+        default_factory=dict,
+        description="MCP Server Configurations to connect to Ursa",
     )
