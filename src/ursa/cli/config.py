@@ -110,6 +110,11 @@ class Settings(BaseSettings):
         True,
         description="Whether or not to verify SSL certificates for embedding model.",
     )
+    safe_codes: list[str] = Field(
+        description="Programming languages that the execution agent can trust by default.",
+        validation_alias="URSA_THREAD_ID",
+        default_factory=lambda: ["python", "julia"],
+    )
     mcp_servers: dict[str, ServerParameters] = Field(
         default_factory=dict,
         description="MCP Server Configurations to connect to Ursa",
