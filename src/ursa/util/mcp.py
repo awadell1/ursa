@@ -28,7 +28,6 @@ def validate_server_parameters(config: dict):
             SseServerParameters,
         ):
             try:
-                print(candidate)
                 return candidate(**payload)
             except ValidationError:
                 continue
