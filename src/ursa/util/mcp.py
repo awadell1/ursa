@@ -10,6 +10,8 @@ from pydantic import BeforeValidator, ValidationError
 
 
 def validate_server_parameters(config: dict):
+    if not isinstance(config, dict):
+        return config
     transport_hint = config.get("transport")
     payload = {k: v for k, v in config.items() if k != "transport"}
     if transport_hint == "stdio":
@@ -32,15 +34,19 @@ def validate_server_parameters(config: dict):
                 continue
         else:
             raise ValueError(
-                f"Unable to determine transport for MCP server '{name}'. "
+                f"Unable to determine transport for MCP server '{config}'. "
                 "Provide 'transport' with one of: stdio, sse, streamable_http."
             )
     else:
         raise ValueError(
-            f"Unsupported MCP transport '{transport_hint}' for server '{name}'."
+            f"Unsupported MCP transport '{transport_hint}' for server '{config}'."
         )
 
-ServerParameters = Annotated[StdioServerParameters | SseServerParameters | StreamableHttpParameters, BeforeValidator(validate_server_parameters)]
+
+ServerParameters = Annotated[
+    StdioServerParameters | SseServerParameters | StreamableHttpParameters,
+    BeforeValidator(validate_server_parameters),
+]
 
 
 def transport(sp: ServerParameters) -> str:

@@ -45,6 +45,7 @@ dependencies = [
     "mcp>=1.20.0,<2.0",
     "aiosqlite>=0.21.0",
     "asyncstdlib>=3.13.1",
+    "pyyaml>=6.0.3",
 ]
 classifiers = [
     "Operating System :: OS Independent",
@@ -116,7 +117,4 @@ lammps = [
 ]
 opt = [
     "ortools>=9.14,<9.15",
-]
-mcp = [
-    "fastapi>=0.120.0,<0.121",
 ]

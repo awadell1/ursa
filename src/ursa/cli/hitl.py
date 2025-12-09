@@ -2,8 +2,6 @@ import asyncio
 import inspect
 import os
 import platform
-import asyncio
-import sqlite3
 from cmd import Cmd
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,9 +9,9 @@ from typing import Awaitable, Callable, Optional
 
 import aiosqlite
 import httpx
-from langchain.agents import create_agent
 from asyncstdlib import cached_property
 from langchain.chat_models import init_chat_model
+from mcp.server.fastmcp import FastMCP
 from langchain.embeddings import init_embeddings
 from langchain_core.messages import BaseMessage, HumanMessage
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
@@ -32,8 +30,8 @@ from ursa.agents import (
     WebSearchAgent,
 )
 from ursa.cli.config import Settings
-from ursa.util.memory_logger import AgentMemory
 from ursa.util.mcp import start_mcp_client
+from ursa.util.memory_logger import AgentMemory
 
 app = Typer()
 
@@ -79,7 +77,6 @@ class HITL:
     arxiv_download_papers: bool
     ssl_verify_llm: bool
     ssl_verify_emb: bool
-    ssl_verify: bool
     settings: Settings
 
     def _make_kwargs(self, **kwargs):
@@ -195,11 +192,14 @@ class HITL:
     @cached_property
     async def chatter(self) -> ChatAgent:
         checkpointer = await self._get_checkpointer("chatter")
-        return ChatAgent(
+        chat = ChatAgent(
             llm=self.model,
             checkpointer=checkpointer,
             thread_id=self.thread_id + "_chatter",
         )
+        tools = await self.mcp_client.get_tools()
+        chat.add_tool(tools)
+        return chat
 
     @cached_property
     async def executor(self) -> ExecutionAgent:
@@ -316,6 +316,7 @@ class HITL:
 
     async def run_chatter(self, prompt: str) -> str:
         chatter = await self.chatter
+        assert chatter is not None
         self.chatter_state["messages"].append(
             HumanMessage(
                 content=f"The last agent output was: {self.last_agent_result}\n The user stated: {prompt}"
@@ -357,15 +358,7 @@ class HITL:
             )
         )
         self.planner_state = await planner.ainvoke(self.planner_state)
-
-        plan = "\n\n\n".join(
-            f"## {step['id']} -- {step['name']}\n\n"
-            + "\n\n".join(
-                f"* {key}\n    * {value}" for key, value in step.items()
-            )
-            for step in self.planner_state["plan_steps"]
-        )
-        self.update_last_agent_result(plan)
+        self.update_last_agent_result(str(self.planner_state))
         return f"[Planner Agent Output]:\n {self.last_agent_result}"
 
     async def run_websearcher(self, prompt: str) -> str:
@@ -407,10 +400,39 @@ class HITL:
             arxiv_summaries_path=settings.arxiv_summaries_path,
             arxiv_vectorstore_path=settings.arxiv_vectorstore_path,
             arxiv_download_papers=settings.arxiv_download_papers,
-            ssl_verify=settings.ssl_verify,
+            ssl_verify_emb=settings.ssl_verify_emb,
+            ssl_verify_llm=settings.ssl_verify_llm,
             settings=settings,
         )
         return instance
+
+    def as_mcp_server(self, **kwargs):
+        mcp = FastMCP("URSA Server", **kwargs)
+
+        mcp.add_tool(
+            self.run_arxiv,
+            description="Search for papers on arXiv and summarize in the query context.",
+        )
+        mcp.add_tool(
+            self.run_planner,
+            description="Build a step-by-step plan to solve the user's problem.",
+        )
+        mcp.add_tool(
+            self.run_executor,
+            description="Execute a ReAct agent that can write/edit code & run commands.",
+        )
+        mcp.add_tool(
+            self.run_websearcher,
+            description="Search the web and summarize results in context.",
+        )
+        mcp.add_tool(
+            self.run_hypothesizer,
+            description="Deep reasoning to propose an approach.",
+        )
+        mcp.add_tool(
+            self.run_chatter, description="Direct chat with the hosted LLM."
+        )
+        return mcp
 
 
 class UrsaRepl(Cmd):

@@ -1,9 +1,9 @@
-import asyncio
 import inspect
+import logging
 from pathlib import Path
-from typing import Annotated, Any, Dict, Optional, Literal
+from typing import Annotated, Any, Literal, Optional
 
-from mcp.server.fastmcp import FastMCP
+import yaml
 from rich.console import Console
 from typer import Option, Typer
 
@@ -12,11 +12,11 @@ from ursa.cli.config import Settings
 app = Typer()
 
 
-def _parameter_defaults(func) -> Dict[str, Any]:
+def _parameter_defaults(func) -> dict[str, Any]:
     """Return a mapping of parameter defaults for a callable."""
 
     signature = inspect.signature(func)
-    defaults: Dict[str, Any] = {}
+    defaults: dict[str, Any] = {}
     for name, param in signature.parameters.items():
         if param.default is not inspect._empty:
             defaults[name] = param.default
@@ -25,49 +25,31 @@ def _parameter_defaults(func) -> Dict[str, Any]:
 
 def _build_settings(
     config_file: Optional[Path],
-    cli_values: Dict[str, Any],
-    defaults: Dict[str, Any],
+    cli_values: dict[str, Any],
+    defaults: dict[str, Any],
 ) -> Settings:
     """Load settings from YAML (if provided) and overlay CLI overrides."""
 
-    file_values: Dict[str, Any] = {}
+    file_values: dict[str, Any] = {}
     if config_file is not None:
         config_path = config_file.expanduser()
         if not config_path.exists():
-            secho(
-                f"Config file '{config_path}' not found.",
-                fg=colors.RED,
-            )
-            raise Exit(code=1)
-        try:
-            import yaml
-        except ImportError as exc:
-            secho(
-                "PyYAML is required to load configuration files. "
-                "Install with: pip install pyyaml",
-                fg=colors.RED,
-            )
-            raise Exit(code=1) from exc
+            logging.exception(f"Config file '{config_path}' not found.")
 
         try:
             loaded = yaml.safe_load(config_path.read_text())
         except (OSError, yaml.YAMLError) as exc:
-            secho(
-                f"Failed to read config file '{config_path}': {exc}",
-                fg=colors.RED,
+            logging.exception(
+                f"Failed to read config file '{config_path}': {exc}"
             )
-            raise Exit(code=1) from exc
-
         if loaded is None:
             file_values = {}
         elif isinstance(loaded, dict):
             file_values = loaded
         else:
-            secho(
-                "The YAML configuration must contain a top-level mapping.",
-                fg=colors.RED,
+            logging.exception(
+                "The YAML configuration must contain a top-level mapping."
             )
-            raise Exit(code=1)
 
     settings = Settings(**file_values)
     overrides = {
@@ -290,69 +272,10 @@ def serve(
     with console.status("[grey50]Starting ursa MCP server ..."):
         from ursa.cli.hitl import HITL
 
-    app_path = "ursa.cli.hitl_mcp:mcp_http_app"
-
     settings = _build_settings(config_file=config_file)
     hitl = HITL.from_settings(settings)
-
-    try:
-        mcp = FastMCP(
-            name="URSA Server",
-            host=host,
-            port=port,
-            log_level=log_level,
-        )
-
-        console.print("[bold]Starting MCP Server[/bold]")
-
-        # Each tool is a thin shim to your HITL methods. The type hints become the tool's JSON Schema.
-        @mcp.tool(
-            description="Search for papers on arXiv and summarize in the query context."
-        )
-        def arxiv(query):
-            return hitl.run_arxiv(query)
-
-        @mcp.tool(
-            description="Build a step-by-step plan to solve the user's problem."
-        )
-        def plan(query):
-            return hitl.run_planner(query)
-
-        @mcp.tool(
-            description="Execute a ReAct agent that can write/edit code & run commands."
-        )
-        def execute(query):
-            return hitl.run_executor(query)
-
-        @mcp.tool(
-            description="Search the web and summarize results in context."
-        )
-        def web(query):
-            result = hitl.run_websearcher(query)
-            return result
-
-        # @mcp.tool(description="Recall prior execution steps from memory (RAG).")
-        # def remember(query):
-        #     return hitl.run_rememberer(query)
-
-        @mcp.tool(description="Deep reasoning to propose an approach.")
-        def hypothesize(query):
-            return hitl.run_hypothesizer(query)
-
-        @mcp.tool(description="Direct chat with the hosted LLM.")
-        def chat(query):
-            return hitl.run_chatter(query)
-
-        # Optional: a quick ping/health tool (some clients call this)
-        @mcp.tool(description="Liveness check.")
-        def ping(dummy: str = "ok") -> str:
-            return "pong"
-
-        # ---- ASGI app that serves the MCP Streamable HTTP endpoint ----
-        asyncio.run(mcp.run(transport=transport))
-
-    except KeyboardInterrupt:
-        console.print("[grey50]Shutting down...[/grey50]")
+    mcp = hitl.as_mcp_server(host=host, port=port, log_level=log_level)
+    mcp.run(transport=transport)
 
 
 def main():
