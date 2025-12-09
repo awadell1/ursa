@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 
+import pytest
 from langchain.chat_models import init_chat_model
 from langchain.embeddings import init_embeddings
 
@@ -8,6 +9,13 @@ from ursa.agents import RAGAgent
 from ursa.observability.timing import render_session_summary
 
 
+def is_ollama():
+    import shutil
+
+    return shutil.which("ollama") is not None
+
+
+@pytest.mark.skipif(not is_ollama(), reason="Missing ollama")
 def test_rag_agent():
     rag_output = Path("workspace") / "rag-agent"
     summary_dir = rag_output / "summary"

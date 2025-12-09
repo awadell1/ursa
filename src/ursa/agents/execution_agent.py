@@ -48,7 +48,6 @@ from langchain_core.messages import (
     ToolMessage,
 )
 from langchain_core.tools import StructuredTool
-from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.graph import StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
@@ -70,6 +69,8 @@ from ursa.tools.search_tools import (
     run_web_search,
 )
 from ursa.util.memory_logger import AgentMemory
+
+from ..util.mcp import ServerParameters, start_mcp_client
 
 console = get_console()  # always returns the same instance
 
@@ -561,9 +562,9 @@ class ExecutionAgent(BaseAgent):
         return graph.compile(checkpointer=self.checkpointer)
 
     async def add_mcp_tool(
-        self, mcp_tools: Callable[..., Any] | list[Callable[..., Any]]
+        self, mcp_config: dict[str, ServerParameters]
     ) -> None:
-        client = MultiServerMCPClient(mcp_tools)
+        client = start_mcp_client(mcp_config)
         tools = await client.get_tools()
         self.add_tool(tools)
 
