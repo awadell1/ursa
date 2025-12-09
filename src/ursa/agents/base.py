@@ -34,12 +34,15 @@ from langchain_core.messages import HumanMessage
 from langchain_core.runnables import (
     RunnableLambda,
 )
+from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import StateGraph
+from langgraph.prebuilt import ToolNode
 
 from ursa.observability.timing import (
     Telemetry,  # for timing / telemetry / metrics
 )
+from ursa.util.mcp import ServerParameters, start_mcp_client
 
 InputLike = str | Mapping[str, Any]
 
@@ -143,6 +146,7 @@ class BaseAgent(ABC):
         """
         self.thread_id = thread_id or uuid4().hex
         self.checkpointer = checkpointer
+        self.tools: list[BaseTool] = []
         self.telemetry = Telemetry(
             enable=enable_metrics,
             output_dir=metrics_dir,
@@ -462,9 +466,9 @@ class BaseAgent(ABC):
         """Subclasses implement the actual work against normalized inputs."""
         ...
 
-    def _ainvoke(self, inputs: Mapping[str, Any], **config: Any) -> Any:
+    async def _ainvoke(self, inputs: Mapping[str, Any], **config: Any) -> Any:
         """Subclasses implement the actual work against normalized inputs."""
-        ...
+        return self._invoke(inputs, **config)
 
     def __call__(self, inputs: InputLike, /, **kwargs: Any) -> Any:
         """Specify calling behavior for class instance."""
@@ -724,4 +728,46 @@ class BaseAgent(ABC):
                 "ursa_ns": ns,
                 "ursa_agent": self.name,
             },
+        )
+
+    async def add_mcp_tool(
+        self, mcp_config: dict[str, ServerParameters]
+    ) -> None:
+        client = start_mcp_client(mcp_config)
+        tools = await client.get_tools()
+        self.add_tool(tools)
+
+    def add_tool(
+        self, new_tools: Callable[..., Any] | list[Callable[..., Any]]
+    ) -> None:
+        if isinstance(new_tools, list):
+            self.tools.extend([convert_to_tool(x) for x in new_tools])
+        elif isinstance(new_tools, (BaseTool, Callable)):
+            self.tools.append(convert_to_tool(new_tools))
+        else:
+            raise TypeError("Expected a callable or a list of callables.")
+        self.tool_node = ToolNode(self.tools)
+        self.llm = self.llm.bind_tools(self.tools)
+        self._action = self._build_graph()
+
+    def remove_tool(self, cut_tools: str | list[str]) -> None:
+        if isinstance(cut_tools, str):
+            self.remove_tool([cut_tools])
+        elif isinstance(cut_tools, list):
+            self.tools = [x for x in self.tools if x.name not in cut_tools]
+            self.tool_node = ToolNode(self.tools)
+            self.llm = self.llm.bind_tools(self.tools)
+            self._action = self._build_graph()
+        else:
+            raise TypeError(
+                "Expected a string or a list of strings describing the tools to remove."
+            )
+
+
+def convert_to_tool(fn) -> BaseTool:
+    if isinstance(fn, BaseTool):
+        return fn
+    else:
+        return BaseTool.from_function(
+            func=fn, name=fn.__name__, description=fn.__doc__
         )

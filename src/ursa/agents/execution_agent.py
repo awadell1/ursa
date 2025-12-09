@@ -47,7 +47,6 @@ from langchain_core.messages import (
     SystemMessage,
     ToolMessage,
 )
-from langchain_core.tools import StructuredTool
 from langgraph.graph import StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
@@ -69,8 +68,6 @@ from ursa.tools.search_tools import (
     run_web_search,
 )
 from ursa.util.memory_logger import AgentMemory
-
-from ..util.mcp import ServerParameters, start_mcp_client
 
 console = get_console()  # always returns the same instance
 
@@ -101,16 +98,6 @@ class ExecutionState(TypedDict):
     workspace: str
     symlinkdir: dict
     model: BaseChatModel
-
-
-# Helper functions
-def convert_to_tool(fn):
-    if isinstance(fn, StructuredTool):
-        return fn
-    else:
-        return StructuredTool.from_function(
-            func=fn, name=fn.__name__, description=fn.__doc__
-        )
 
 
 def should_continue(state: ExecutionState) -> Literal["summarize", "continue"]:
@@ -560,46 +547,6 @@ class ExecutionAgent(BaseAgent):
 
         # Compile and return the executable graph (optionally with a checkpointer).
         return graph.compile(checkpointer=self.checkpointer)
-
-    async def add_mcp_tool(
-        self, mcp_config: dict[str, ServerParameters]
-    ) -> None:
-        client = start_mcp_client(mcp_config)
-        tools = await client.get_tools()
-        self.add_tool(tools)
-
-    def add_tool(
-        self, new_tools: Callable[..., Any] | list[Callable[..., Any]]
-    ) -> None:
-        if isinstance(new_tools, list):
-            self.tools.extend([convert_to_tool(x) for x in new_tools])
-        elif isinstance(new_tools, StructuredTool) or isinstance(
-            new_tools, Callable
-        ):
-            self.tools.append(convert_to_tool(new_tools))
-        else:
-            raise TypeError("Expected a callable or a list of callables.")
-        self.tool_node = ToolNode(self.tools)
-        self.llm = self.llm.bind_tools(self.tools)
-        self._action = self._build_graph()
-
-    def list_tools(self) -> None:
-        print(
-            f"Available tool names are: {', '.join([x.name for x in self.tools])}."
-        )
-
-    def remove_tool(self, cut_tools: str | list[str]) -> None:
-        if isinstance(cut_tools, str):
-            self.remove_tool([cut_tools])
-        elif isinstance(cut_tools, list):
-            self.tools = [x for x in self.tools if x.name not in cut_tools]
-            self.tool_node = ToolNode(self.tools)
-            self.llm = self.llm.bind_tools(self.tools)
-            self._action = self._build_graph()
-        else:
-            raise TypeError(
-                "Expected a string or a list of strings describing the tools to remove."
-            )
 
     def _invoke(
         self, inputs: Mapping[str, Any], recursion_limit: int = 999_999, **_

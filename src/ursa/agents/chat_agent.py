@@ -20,7 +20,7 @@ class ChatAgent(BaseAgent):
         **kwargs,
     ):
         super().__init__(llm, **kwargs)
-        self._build_graph()
+        self._action = self._build_graph()
 
     def _response_node(self, state: ChatState) -> ChatState:
         res = self.llm.invoke(
@@ -33,7 +33,7 @@ class ChatAgent(BaseAgent):
         self.add_node(graph, self._response_node)
         graph.set_entry_point("_response_node")
         graph.set_finish_point("_response_node")
-        self._action = graph.compile(checkpointer=self.checkpointer)
+        return graph.compile(checkpointer=self.checkpointer)
 
     def _invoke(
         self, inputs: Mapping[str, Any], recursion_limit: int = 1000, **_
@@ -42,6 +42,14 @@ class ChatAgent(BaseAgent):
             recursion_limit=recursion_limit, tags=["graph"]
         )
         return self._action.invoke(inputs, config)
+
+    def _ainvoke(
+        self, inputs: Mapping[str, Any], recursion_limit: int = 1000, **_
+    ):
+        config = self.build_config(
+            recursion_limit=recursion_limit, tags=["graph"]
+        )
+        return self._action.ainvoke(inputs, config)
 
 
 def main():
