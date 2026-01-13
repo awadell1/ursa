@@ -96,6 +96,9 @@ ursa = ["observability/pricing.json"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 addopts = "--numprocesses auto --dist worksteal"
+markers = [
+    "gpu: tests that exercise accelerator-specific behavior",
+]
 
 [dependency-groups]
 dev = [
