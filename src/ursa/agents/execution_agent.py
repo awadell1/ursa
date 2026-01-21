@@ -26,38 +26,31 @@ Entry points:
 """
 
 # from langchain_core.runnables.graph import MermaidDrawMethod
-import os
 from pathlib import Path
 from typing import (
     Annotated,
     Any,
-    Callable,
     Literal,
-    Mapping,
     Optional,
     TypedDict,
 )
 
-import randomname
 from langchain.agents.middleware import SummarizationMiddleware
 from langchain.chat_models import BaseChatModel
+from langchain.tools import BaseTool
 from langchain_core.messages import (
     AIMessage,
     AnyMessage,
     SystemMessage,
     ToolMessage,
 )
-from langchain_core.tools import StructuredTool
-from langchain_mcp_adapters.client import MultiServerMCPClient
-from langgraph.graph import StateGraph
 from langgraph.graph.message import add_messages
-from langgraph.prebuilt import ToolNode
 
 # Rich
 from rich import get_console
 from rich.panel import Panel
 
-from ursa.agents.base import BaseAgent
+from ursa.agents.base import AgentWithTools, BaseAgent
 from ursa.prompt_library.execution_prompts import (
     executor_prompt,
     get_safety_prompt,
@@ -97,19 +90,9 @@ class ExecutionState(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
     current_progress: str
     code_files: list[str]
-    workspace: str
+    workspace: Path
     symlinkdir: dict
     model: BaseChatModel
-
-
-# Helper functions
-def convert_to_tool(fn):
-    if isinstance(fn, StructuredTool):
-        return fn
-    else:
-        return StructuredTool.from_function(
-            func=fn, name=fn.__name__, description=fn.__doc__
-        )
 
 
 def should_continue(state: ExecutionState) -> Literal["recap", "continue"]:
@@ -155,7 +138,7 @@ def command_safe(state: ExecutionState) -> Literal["safe", "unsafe"]:
 
 
 # Main module class
-class ExecutionAgent(BaseAgent):
+class ExecutionAgent(AgentWithTools, BaseAgent[ExecutionState]):
     """Orchestrates model-driven code execution, tool calls, and state management.
 
     Orchestrates model-driven code execution, tool calls, and state management for
@@ -186,12 +169,11 @@ class ExecutionAgent(BaseAgent):
             loop.
         recap_prompt (str): Prompt used to request concise summaries for
             memory or final output.
-        tools (list[Tool]): Tools available to the agent (run_command, write_code,
-            edit_code, read_file, run_web_search, run_osti_search, run_arxiv_search).
+        tools (dict[str, Tool]): Tools available to the agent (run_command, write_code,
+            edit_code, read_file, run_web_search, run_osti_search, run_arxiv_search),
+            keyed by tool name for quick lookups.
         tool_node (ToolNode): Graph node that dispatches tool calls.
         llm (BaseChatModel): LLM instance bound to the available tools.
-        _action (StateGraph): Compiled execution graph that implements the
-            main loop and branching logic.
 
     Methods:
         query_executor(state): Send messages to the executor LLM, ensure
@@ -206,35 +188,26 @@ class ExecutionAgent(BaseAgent):
             of files that the agent has generated and can trust.
         _build_graph(): Construct and compile the StateGraph for the agent
             loop.
-        _invoke(inputs, recursion_limit=...): Internal entry that invokes the
-            compiled graph with a given recursion limit.
-        action (property): Disabled; direct access is not supported. Use
-            invoke or stream entry points instead.
 
     Raises:
         AttributeError: Accessing the .action attribute raises to encourage
             using .stream(...) or .invoke(...).
     """
 
+    state_type = ExecutionState
+
     def __init__(
         self,
         llm: BaseChatModel,
         agent_memory: Optional[Any | AgentMemory] = None,
         log_state: bool = False,
-        extra_tools: Optional[list[Callable[..., Any]]] = None,
+        extra_tools: Optional[list[BaseTool] | None] = None,
         tokens_before_summarize: int = 50000,
         messages_to_keep: int = 20,
         safe_codes: Optional[list[str]] = None,
         **kwargs,
     ):
-        """ExecutionAgent class initialization."""
-        super().__init__(llm, **kwargs)
-        self.agent_memory = agent_memory
-        self.safe_codes = safe_codes or ["python", "julia"]
-        self.get_safety_prompt = get_safety_prompt
-        self.executor_prompt = executor_prompt
-        self.recap_prompt = recap_prompt
-        self.tools = [
+        default_tools = [
             run_command,
             write_code,
             edit_code,
@@ -243,13 +216,17 @@ class ExecutionAgent(BaseAgent):
             run_osti_search,
             run_arxiv_search,
         ]
+        if extra_tools:
+            default_tools.extend(extra_tools)
+
+        super().__init__(llm=llm, tools=default_tools, **kwargs)
+        self.agent_memory = agent_memory
+        self.safe_codes = safe_codes or ["python", "julia"]
+        self.get_safety_prompt = get_safety_prompt
+        self.executor_prompt = executor_prompt
+        self.recap_prompt = recap_prompt
         self.extra_tools = extra_tools
-        if self.extra_tools is not None:
-            self.tools.extend(self.extra_tools)
-        self.tool_node = ToolNode(self.tools)
-        self.llm = self.llm.bind_tools(self.tools)
         self.log_state = log_state
-        self._action = self._build_graph()
         self.context_summarizer = SummarizationMiddleware(
             model=self.llm,
             max_tokens_before_summary=tokens_before_summarize,
@@ -290,7 +267,7 @@ class ExecutionAgent(BaseAgent):
         """Prepare workspace, handle optional symlinks, and invoke the executor LLM.
 
         This method copies the incoming state, ensures a workspace directory exists
-        (creating one with a random name when absent), optionally creates a symlink
+        (creating one with a default name when absent), optionally creates a symlink
         described by state["symlinkdir"], sets or injects the executor system prompt
         as the first message, and invokes the bound LLM. When logging is enabled,
         it persists the pre-invocation state to disk.
@@ -312,13 +289,13 @@ class ExecutionAgent(BaseAgent):
 
         # 1) Ensure a workspace directory exists, creating a named one if absent.
         if "workspace" not in new_state.keys():
-            new_state["workspace"] = randomname.get_name()
+            new_state["workspace"] = self.workspace
             print(
                 f"{RED}Creating the folder "
                 f"{BLUE}{BOLD}{new_state['workspace']}{RESET}{RED} "
                 f"for this project.{RESET}"
             )
-        os.makedirs(new_state["workspace"], exist_ok=True)
+        Path(new_state["workspace"]).mkdir(exist_ok=True)
 
         # 1.5) Check message history length and summarize to shorten the token usage:
         new_state = self._summarize_context(new_state)
@@ -518,25 +495,27 @@ class ExecutionAgent(BaseAgent):
 
     def _build_graph(self):
         """Construct and compile the agent's LangGraph state machine."""
-        # Create a graph over the agent's execution state.
-        graph = StateGraph(ExecutionState)
+
+        # Bind tools to llm and context summarizer
+        self.llm = self.llm.bind_tools(self.tools.values())
+        self.context_summarizer.model = self.llm
 
         # Register nodes:
         # - "agent": LLM planning/execution step
         # - "action": tool dispatch (run_command, write_code, etc.)
         # - "recap": summary/finalization step
         # - "safety_check": gate for shell command safety
-        self.add_node(graph, self.query_executor, "agent")
-        self.add_node(graph, self.tool_node, "action")
-        self.add_node(graph, self.recap, "recap")
-        self.add_node(graph, self.safety_check, "safety_check")
+        self.add_node(self.query_executor, "agent")
+        self.add_node(self.tool_node, "action")
+        self.add_node(self.recap, "recap")
+        self.add_node(self.safety_check, "safety_check")
 
         # Set entrypoint: execution starts with the "agent" node.
-        graph.set_entry_point("agent")
+        self.graph.set_entry_point("agent")
 
         # From "agent", either continue (tools) or finish (recap),
         # based on presence of tool calls in the last message.
-        graph.add_conditional_edges(
+        self.graph.add_conditional_edges(
             "agent",
             self._wrap_cond(should_continue, "should_continue", "execution"),
             {"continue": "safety_check", "recap": "recap"},
@@ -544,97 +523,17 @@ class ExecutionAgent(BaseAgent):
 
         # From "safety_check", route to tools if safe, otherwise back to agent
         # to revise the plan without executing unsafe commands.
-        graph.add_conditional_edges(
+        self.graph.add_conditional_edges(
             "safety_check",
             self._wrap_cond(command_safe, "command_safe", "execution"),
             {"safe": "action", "unsafe": "agent"},
         )
 
         # After tools run, return control to the agent for the next step.
-        graph.add_edge("action", "agent")
+        self.graph.add_edge("action", "agent")
 
         # The graph completes at the "recap" node.
-        graph.set_finish_point("recap")
+        self.graph.set_finish_point("recap")
 
-        # Compile and return the executable graph (optionally with a checkpointer).
-        return graph.compile(checkpointer=self.checkpointer)
-
-    async def add_mcp_tool(
-        self, mcp_tools: Callable[..., Any] | list[Callable[..., Any]]
-    ) -> None:
-        client = MultiServerMCPClient(mcp_tools)
-        tools = await client.get_tools()
-        self.add_tool(tools)
-
-    def add_tool(
-        self, new_tools: Callable[..., Any] | list[Callable[..., Any]]
-    ) -> None:
-        if isinstance(new_tools, list):
-            self.tools.extend([convert_to_tool(x) for x in new_tools])
-        elif isinstance(new_tools, StructuredTool) or isinstance(
-            new_tools, Callable
-        ):
-            self.tools.append(convert_to_tool(new_tools))
-        else:
-            raise TypeError("Expected a callable or a list of callables.")
-        self.tool_node = ToolNode(self.tools)
-        self.llm = self.llm.bind_tools(self.tools)
-        self._action = self._build_graph()
-
-    def list_tools(self) -> None:
-        print(
-            f"Available tool names are: {', '.join([x.name for x in self.tools])}."
-        )
-
-    def remove_tool(self, cut_tools: str | list[str]) -> None:
-        if isinstance(cut_tools, str):
-            self.remove_tool([cut_tools])
-        elif isinstance(cut_tools, list):
-            self.tools = [x for x in self.tools if x.name not in cut_tools]
-            self.tool_node = ToolNode(self.tools)
-            self.llm = self.llm.bind_tools(self.tools)
-            self._action = self._build_graph()
-        else:
-            raise TypeError(
-                "Expected a string or a list of strings describing the tools to remove."
-            )
-
-    def _invoke(
-        self, inputs: Mapping[str, Any], recursion_limit: int = 999_999, **_
-    ):
-        """Invoke the compiled graph with inputs under a specified recursion limit.
-
-        This method builds a LangGraph config with the provided recursion limit
-        and a "graph" tag, then delegates to the compiled graph's invoke method.
-        """
-        # Build invocation config with a generous recursion limit for long runs.
-        config = self.build_config(
-            recursion_limit=recursion_limit, tags=["graph"]
-        )
-
-        # Delegate execution to the compiled graph.
-        return self._action.invoke(inputs, config)
-
-    def _ainvoke(
-        self, inputs: Mapping[str, Any], recursion_limit: int = 999_999, **_
-    ):
-        """Invoke the compiled graph with inputs under a specified recursion limit.
-
-        This method builds a LangGraph config with the provided recursion limit
-        and a "graph" tag, then delegates to the compiled graph's invoke method.
-        """
-        # Build invocation config with a generous recursion limit for long runs.
-        config = self.build_config(
-            recursion_limit=recursion_limit, tags=["graph"]
-        )
-
-        # Delegate execution to the compiled graph.
-        return self._action.ainvoke(inputs, config)
-
-    # This property is trying to stop people bypassing invoke
-    @property
-    def action(self):
-        """Property used to affirm `action` attribute is unsupported."""
-        raise AttributeError(
-            "Use .stream(...) or .invoke(...); direct .action access is unsupported."
-        )
+    def format_result(self, state: ExecutionState) -> str:
+        return state["messages"][-1].content
