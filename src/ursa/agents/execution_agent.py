@@ -280,11 +280,11 @@ class ExecutionAgent(AgentWithTools, BaseAgent[ExecutionState]):
                 pass
 
             summarize_prompt = f"""
-            Your only tasks is to provide a detailed, comprehensive summary of the following 
-            conversation. 
+            Your only tasks is to provide a detailed, comprehensive summary of the following
+            conversation.
 
-            Your summary will be the only information retained from the conversation, so ensure 
-            it contains all details that need to be remembered to meet the goals of the work. 
+            Your summary will be the only information retained from the conversation, so ensure
+            it contains all details that need to be remembered to meet the goals of the work.
 
             Conversation to summarize:
             {conversation_to_summarize}
@@ -406,9 +406,9 @@ class ExecutionAgent(AgentWithTools, BaseAgent[ExecutionState]):
         # Return the model's response and the workspace path as a partial state update.
         return new_state
 
-    def tool_use(self, state: ExecutionState) -> ExecutionState:
+    async def tool_use(self, state: ExecutionState) -> ExecutionState:
         new_state = state.copy()
-        update = self.tool_node.invoke(state)
+        update = await self.tool_node.ainvoke(state)
         # Could be implemented better, but handles the different forms of tool response:
         #     dict of messages, list of Commands, etc.
         try:
