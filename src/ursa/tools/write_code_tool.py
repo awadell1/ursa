@@ -5,10 +5,10 @@ from langchain.tools import ToolRuntime
 from langchain_core.tools import tool
 from rich import get_console
 from rich.panel import Panel
-from rich.syntax import Syntax
 
 from ursa.agents.base import AgentContext
 from ursa.util.diff_renderer import DiffRenderer
+from ursa.util.events import ToolEvents
 from ursa.util.parse import read_text_file
 from ursa.util.types import AsciiStr
 
@@ -32,39 +32,22 @@ def write_code(
     """
     # Determine the full path to the target file
     workspace_dir = runtime.context.workspace
-    console.print("[cyan]Writing file:[/]", filename)
-
-    # Show syntax-highlighted preview before writing to file
-    try:
-        lexer_name = Syntax.guess_lexer(filename, code)
-    except Exception:
-        lexer_name = "text"
-
-    console.print(
-        Panel(
-            Syntax(code, lexer_name, line_numbers=True),
-            title="File Preview",
-            border_style="cyan",
-        )
-    )
 
     # Write cleaned code to disk
     code_file = workspace_dir.joinpath(filename)
+    events = ToolEvents.from_runtime("write_code", runtime)
     try:
-        with open(code_file, "w", encoding="utf-8") as f:
+        with events.range(
+            "write",
+            "Writing file",
+            done="File written",
+            error="Failed to write file",
+            filename=filename,
+            path=str(code_file),
+        ), open(code_file, "w", encoding="utf-8") as f:
             f.write(code)
-    except Exception as exc:
-        console.print(
-            "[bold bright_white on red] :heavy_multiplication_x: [/] "
-            "[red]Failed to write file:[/]",
-            exc,
-        )
+    except OSError:
         return f"Failed to write {filename}."
-
-    console.print(
-        f"[bold bright_white on green] :heavy_check_mark: [/] "
-        f"[green]File written:[/] {code_file}"
-    )
 
     # Record the edit operation
     if (store := runtime.store) is not None:
@@ -135,7 +118,7 @@ def edit_code(
     try:
         with open(code_file, "w", encoding="utf-8") as f:
             f.write(updated)
-    except Exception as exc:
+    except OSError as exc:
         console.print(
             "[bold bright_white on red] :heavy_multiplication_x: [/] "
             "[red]Failed to write file:[/]",
